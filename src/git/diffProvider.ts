@@ -14,7 +14,7 @@ function detectLanguage(filePath: string): string {
   return ext.slice(1);
 }
 
-function parseDiff(rawDiff: string): DiffFile[] {
+export function parseDiff(rawDiff: string): DiffFile[] {
   const files: DiffFile[] = [];
   const lines = rawDiff.split("\n");
   let currentFile: DiffFile | undefined;

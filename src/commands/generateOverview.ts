@@ -16,7 +16,7 @@ const MAX_MARKDOWN_SECTIONS = 3;
 const MAX_MARKDOWN_CHARS_PER_SECTION = 900;
 const MAX_MARKDOWN_CHARS_TOTAL_FOR_REVIEW = 2800;
 
-function normalizeCompactedDiff(compactedDiff: string, fallbackDiff: string): string {
+export function normalizeCompactedDiff(compactedDiff: string, fallbackDiff: string): string {
   const trimmedCompactedDiff = compactedDiff.trim();
   if (!trimmedCompactedDiff) {
     return fallbackDiff;
@@ -51,7 +51,7 @@ function calculateRelevanceScore(content: string, keywords: Set<string>): number
   return score;
 }
 
-function compactDocumentationContext(
+export function compactDocumentationContext(
   docsContext: DocumentationContext[],
   compactedDiff: string,
 ): DocumentationContext[] {
@@ -82,7 +82,7 @@ interface MarkdownSection {
   content: string;
 }
 
-function compactMarkdownContext(
+export function compactMarkdownContext(
   markdownContext: string,
   compactedDiff: string,
 ): string {
