@@ -143,10 +143,31 @@ export function compactMarkdownContext(
   return resultSections.join("\n\n");
 }
 
+function raceWithCancellation<T>(
+  promise: Promise<T>,
+  token: vscode.CancellationToken,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (token.isCancellationRequested) {
+      reject(new vscode.CancellationError());
+      return;
+    }
+    const subscription = token.onCancellationRequested(() => {
+      subscription.dispose();
+      reject(new vscode.CancellationError());
+    });
+    promise.then(
+      (value) => { subscription.dispose(); resolve(value); },
+      (error) => { subscription.dispose(); reject(error); },
+    );
+  });
+}
+
 export async function generateOverviewCommand(
   rawDiff: string,
   secretService: SecretStorageService,
   includeMarkdownFiles = false,
+  externalToken?: vscode.CancellationToken,
 ): Promise<
   | {
     markdown: string;
@@ -176,82 +197,109 @@ export async function generateOverviewCommand(
     ? await loadMarkdownContext()
     : "";
 
-  return vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: "Generating AI overview...",
-      cancellable: false,
-    },
-    async () => {
-      try {
-        const { marked } = await import("marked");
-        const geminiRepository = new GeminiRepository(apiKey);
-        const libraryReferences = extractLibraryReferencesFromRawDiff(rawDiff);
-        let docsContext: DocumentationContext[] = [];
-        let context7Message = "Context7 не использовался.";
+  const cts = new vscode.CancellationTokenSource();
+  externalToken?.onCancellationRequested(() => cts.cancel());
+
+  try {
+    return await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Generating AI overview...",
+        cancellable: true,
+      },
+      async (_progress, progressToken) => {
+        progressToken.onCancellationRequested(() => cts.cancel());
+        const token = cts.token;
+
         try {
-          docsContext = await fetchDocumentationForReferences(libraryReferences, {
-            workspaceRoot:
-              vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-          });
-          context7Message =
-            docsContext.length > 0
-              ? `Context7: получено ${docsContext.length} набора документации.`
-              : "Context7: релевантная документация не найдена.";
-        } catch (contextError) {
-          const contextMessage =
-            contextError instanceof Error
-              ? contextError.message
-              : String(contextError);
-          console.warn(
-            `[Git Commit Assist] Context7 unavailable: ${contextMessage}`,
+          const { marked } = await import("marked");
+          const geminiRepository = new GeminiRepository(apiKey);
+          const libraryReferences = extractLibraryReferencesFromRawDiff(rawDiff);
+          let docsContext: DocumentationContext[] = [];
+          let context7Message = "Context7 не использовался.";
+          try {
+            docsContext = await raceWithCancellation(
+              fetchDocumentationForReferences(libraryReferences, {
+                workspaceRoot:
+                  vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+              }),
+              token,
+            );
+            context7Message =
+              docsContext.length > 0
+                ? `Context7: получено ${docsContext.length} набора документации.`
+                : "Context7: релевантная документация не найдена.";
+          } catch (contextError) {
+            if (contextError instanceof vscode.CancellationError) {
+              throw contextError;
+            }
+            const contextMessage =
+              contextError instanceof Error
+                ? contextError.message
+                : String(contextError);
+            console.warn(
+              `[Git Commit Assist] Context7 unavailable: ${contextMessage}`,
+            );
+            context7Message = `Context7 недоступен: ${contextMessage}`;
+          }
+
+          const compactedDiffPrompt = buildDiffCompactionPromptWithDocs(
+            rawDiff,
+            docsContext,
           );
-          context7Message = `Context7 недоступен: ${contextMessage}`;
+          const compactedDiff = normalizeCompactedDiff(
+            await raceWithCancellation(
+              geminiRepository.sendMessage(compactedDiffPrompt),
+              token,
+            ),
+            rawDiff,
+          );
+
+          const compactedDocsContext = compactDocumentationContext(
+            docsContext,
+            compactedDiff,
+          );
+          const compactedMarkdownContext = compactMarkdownContext(
+            markdownContext,
+            compactedDiff,
+          );
+
+          const prompt = buildDiffOverviewPrompt(
+            compactedDiff,
+            compactedDocsContext,
+            compactedMarkdownContext,
+          );
+          const overview = await raceWithCancellation(
+            geminiRepository.sendMessage(prompt),
+            token,
+          );
+          const overviewHtml = marked.parse(overview, { async: false }) as string;
+
+          // Output to extension host console for the current milestone.
+          console.log("[Git Commit Assist] AI Overview Result:");
+          console.log(overview);
+          return {
+            markdown: overview,
+            html: overviewHtml,
+            context7Used: compactedDocsContext.length > 0,
+            context7Sources: compactedDocsContext.map(
+              (doc) => `${doc.libraryName} (${doc.libraryId})`,
+            ),
+            context7Message,
+          };
+        } catch (error) {
+          if (error instanceof vscode.CancellationError) {
+            throw error;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          vscode.window.showErrorMessage(`AI overview failed: ${message}`);
+          return undefined;
         }
-        const compactedDiffPrompt = buildDiffCompactionPromptWithDocs(
-          rawDiff,
-          docsContext,
-        );
-        const compactedDiff = normalizeCompactedDiff(
-          await geminiRepository.sendMessage(compactedDiffPrompt),
-          rawDiff,
-        );
-        const compactedDocsContext = compactDocumentationContext(
-          docsContext,
-          compactedDiff,
-        );
-        const compactedMarkdownContext = compactMarkdownContext(
-          markdownContext,
-          compactedDiff,
-        );
-
-        const prompt = buildDiffOverviewPrompt(
-          compactedDiff,
-          compactedDocsContext,
-          compactedMarkdownContext,
-        );
-        const overview = await geminiRepository.sendMessage(prompt);
-        const overviewHtml = marked.parse(overview, { async: false }) as string;
-
-        // Output to extension host console for the current milestone.
-        console.log("[Git Commit Assist] AI Overview Result:");
-        console.log(overview);
-        return {
-          markdown: overview,
-          html: overviewHtml,
-          context7Used: compactedDocsContext.length > 0,
-          context7Sources: compactedDocsContext.map(
-            (doc) => `${doc.libraryName} (${doc.libraryId})`,
-          ),
-          context7Message,
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`AI overview failed: ${message}`);
-        return undefined;
-      }
-    },
-  );
+      },
+    );
+  } finally {
+    cts.dispose();
+  }
 }
 
 const MAX_MARKDOWN_CHARS_PER_FILE = 3500;

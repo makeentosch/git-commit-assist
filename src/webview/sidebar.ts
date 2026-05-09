@@ -71,18 +71,21 @@ declare function acquireVsCodeApi(): {
       screens.showHome();
     },
   );
-  (document.getElementById("proceedReview") as HTMLElement).addEventListener(
-    "click",
-    () => {
-      if (lastDiff) {
-        setProceedLoading(true);
-        vscode.postMessage({
-          command: "proceedReview",
-          includeMarkdownFiles: includeMarkdownFilesEl.checked,
-        });
-      }
-    },
-  );
+  proceedButtonEl.addEventListener("click", () => {
+    if (proceedButtonEl.classList.contains("is-loading")) {
+      proceedButtonEl.disabled = true;
+      proceedButtonEl.textContent = "Cancelling...";
+      vscode.postMessage({ command: "cancelGeneration" });
+      return;
+    }
+    if (lastDiff) {
+      setProceedLoading(true);
+      vscode.postMessage({
+        command: "proceedReview",
+        includeMarkdownFiles: includeMarkdownFilesEl.checked,
+      });
+    }
+  });
   (document.getElementById("overviewGoBack") as HTMLElement).addEventListener(
     "click",
     () => {
@@ -100,9 +103,16 @@ declare function acquireVsCodeApi(): {
   }
 
   function setProceedLoading(isLoading: boolean): void {
-    proceedButtonEl.disabled = isLoading;
     proceedButtonEl.classList.toggle("is-loading", isLoading);
-    proceedButtonEl.textContent = isLoading ? "Generating..." : "Proceed";
+    if (isLoading) {
+      proceedButtonEl.disabled = false;
+      proceedButtonEl.textContent = "Cancel";
+      proceedButtonEl.classList.add("secondary-button");
+    } else {
+      proceedButtonEl.disabled = false;
+      proceedButtonEl.textContent = "Proceed";
+      proceedButtonEl.classList.remove("secondary-button");
+    }
   }
 
   function renderContext7Usage(message: WebviewMessage): void {
@@ -154,6 +164,9 @@ declare function acquireVsCodeApi(): {
           renderer.renderOverview(lastDiff);
         }
         screens.showOverview();
+        break;
+      case "overviewCancelled":
+        setProceedLoading(false);
         break;
       case "overviewFailed":
         setProceedLoading(false);

@@ -27,11 +27,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "git-commit-assist.generateOverview",
-      (rawDiff: string, includeMarkdownFiles?: boolean) =>
+      (rawDiff: string, includeMarkdownFiles?: boolean, token?: vscode.CancellationToken) =>
         generateOverviewCommand(
           rawDiff,
           secretService,
           Boolean(includeMarkdownFiles),
+          token,
         ),
     ),
   );

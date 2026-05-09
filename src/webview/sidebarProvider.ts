@@ -7,6 +7,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   private view?: vscode.WebviewView;
   private lastRawDiff = "";
+  private _generationCts: vscode.CancellationTokenSource | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -39,6 +40,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       if (message.command === "proceedReview") {
         const includeMarkdownFiles = Boolean(message.includeMarkdownFiles);
         void this.handleProceedReview(includeMarkdownFiles);
+        return;
+      }
+
+      if (message.command === "cancelGeneration") {
+        this._generationCts?.cancel();
         return;
       }
 
@@ -106,6 +112,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    this._generationCts?.cancel();
+    this._generationCts?.dispose();
+    const cts = new vscode.CancellationTokenSource();
+    this._generationCts = cts;
+
     try {
       const overview = await vscode.commands.executeCommand<
         | {
@@ -120,6 +131,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         "git-commit-assist.generateOverview",
         this.lastRawDiff,
         includeMarkdownFiles,
+        cts.token,
       );
 
       if (!this.view) {
@@ -139,9 +151,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
 
       this.view.webview.postMessage({ command: "overviewFailed" });
-    } catch {
-      if (this.view) {
+    } catch (e) {
+      if (!this.view) {
+        return;
+      }
+      if (e instanceof vscode.CancellationError) {
+        this.view.webview.postMessage({ command: "overviewCancelled" });
+      } else {
         this.view.webview.postMessage({ command: "overviewFailed" });
+      }
+    } finally {
+      cts.dispose();
+      if (this._generationCts === cts) {
+        this._generationCts = undefined;
       }
     }
   }
